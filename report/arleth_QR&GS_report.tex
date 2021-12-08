@@ -9,6 +9,7 @@
 \usepackage[none]{hyphenat} % Remove hyphens
 \usepackage{indentfirst}
 \usepackage{setspace}
+\usepackage{listings}
 \usepackage[superscript]{cite}
 \graphicspath{{graphics/}{graphics/arch/}{Graphics/}{./}} % Look in these folders for graphics
 %
@@ -19,13 +20,28 @@
 \renewcommand{\bibsection}{\section{REFERENCES}}
 \addto\captionsenglish{\renewcommand{\figurename}{FIG.}}
 
-\newcommand{\proj}{{\texttt{Toward online efficient dimension reduction algorithms}}\xspace}
+\lstset{frame=tb,
+  aboveskip=3mm,
+  belowskip=3mm,
+  showstringspaces=false,
+  columns=flexible,
+  basicstyle={\small\ttfamily},
+  numbers=none,
+  numberstyle=\tiny\color{gray},
+  keywordstyle=\color{blue},
+  commentstyle=\color{dkgreen},
+  stringstyle=\color{mauve},
+  breaklines=true,
+  breakatwhitespace=true,
+  tabsize=3
+}
+
 %
 %
 \begin{document}
 %
 % TODO
-\title{Efficient online dimension reduction}
+\title{Gram-Schmidt and the QR algorithm}
 %
 % subtitle is optional
 %
@@ -46,8 +62,6 @@
 
 \abstract{%
 
-\begin{doublespace}
-This paper presents work on creating online dimensionality reduction algorithms using rank-1 updates. Dimensionality reduction algorithms such as principal component analysis and proper orthogonal decomposition are used for reducing dimensionality of high dimensional data, which is found in a variety of scientific research. These algorithms allow high dimensional data to be more efficiently analyzed without losing meaning present in the data. However, offline versions of these algorithms can be computationally inefficient when there are high volumes of data to be dimensionally reduced or if the data points themselves are of large dimensionality. Therefore, we investigate the use of rank-1 updates to make online versions of these algorithms to speed up these bottlenecks. Rank-1 updates allow one to reuse previously done computations, which allows computers to circumvent redoing calculations unnecessarily. Additionally, because rank-1 updates use previous information, less data are needed to perform dimensionality reduction. Thus, we can also selectively update our dimension reduction by observing how the eigenvalue decay is affected by a given update, leading to less data being incorporated. We begin by reviewing principle componenet analysis and proper orthogonal decomposition. We then derive formulations for computing the covariance matrix and performing the eigendecomposition of this matrix using rank-1 updates. We implement our derivations on both Julia and MATLAB. We then test our implementations on simulation data to allow for comparison between an offline version of the proper orthogonal decomposition algorithm. Finally, we perform a performance analysis on the eigenvalue solver routine. We find that the covariance algorithm and eigenvalue algorithm provide accurate results, but that our eigenvector algorithm requires further research as it has instabilities. Our eigenvector algorithm becomes unstable due to floating-point errors, however this issue can be naively resolved by adding noise to incoming data.\end{doublespace}
 }
 %
 \maketitle
@@ -56,178 +70,273 @@ This paper presents work on creating online dimensionality reduction algorithms 
 %
 \section{INTRODUCTION}
 \label{intro}
-High dimensional data are encountered in research such as from fMRI scans, digital media, and simulation data. To analyze these data efficiently, it must often have its dimensionality reduced. This is because analyzing high dimensional data can be impossible or very slow, for example, if it is too large to load onto a computer or if it is too costly to perform computations on these data. When one uses a dimensionality reduction algorithm, one aims to maintain the intrinsic dimensionality of the data. As in, one wants to use the minimum number of parameters to preserve the properties of the data\cite{RefA}. This reduction of the original data to its essential parameters can be achieved by using algorithms such as proper orthogonal decomposition (POD) or principal component analysis (PCA). Once the data have been reduced in dimensionality, one is then able to load their data onto their computer and perform analyses of them. This technique of dimensionality reduction is found in a variety of applications, from forensic data analysis to nuclear reactor simulation data analysis\cite{RefIntro}. However, these algorithms can become inefficient when the dimensionality of the data it is reducing is so large one cannot run the algorithms on them.
-
-We study POD and PCA which are prone to becoming unusable when reducing large data. The classical PCA and POD algorithms must be able to calculate the covariance matrix of the data and perform an eigendecomposition of it to ultimately truncate and then reconstruct the data with lower dimensionality\cite{RefB, RefC}.Because they must calculate the covariance matrix, they must be able to load the data set onto the machine which requires $O(d^2)$ space where $d$ is the dimensions of the data. Additionally, to perform the eigendecomposition of the data, one generally performs $O(ndmin(n, d))$ flops where $n$ is the number of data points and $d$ is the dimensions of the data.\cite{RefB} Thus, when data become very large, it can be inefficient or impossible to run these algorithms if they cannot be loaded into memory or if they require too many computations to determine the eigendecomposition.
-
-Therefore, we have decided to research the incorporation of rank-1 updates to make online versions these algorithms. Online implementations of these algorithms would read in each data point one by one and perform the dimensionality reduction iteratively rather than loading the entire data set onto the machine and doing the reduction all at once. Rank-1 updates allow one to incorporate these iterative updates into a previously computed covariance matrix and allows us to reuse prior eigendecompositions to compute an updated eigendecomposition\cite{RefB}.We will proceed to describe the mathematical derivations of using rank-1 updates for covariance matrix and eigendecomposition computations, the status of our implementations, and a preliminary performance analysis, and then we will outline how we aim to bring these components together.
+In this expository, we will explore the QR algorithm and the linear algebra ideas behind it. The QR algorithm was developed by John Francis and published in \textit{The Computer Journal} in 1961\cite{RefA}.  This algorithm is powerful as it can be used to calculate the eigenvalue and eigenvectors of a matrix. We will begin by establishing the linear algebra ideas, namely the Gram-Schmidt process and QR decomposition, needed to execute the QR algorithm. We will give examples of these linear algebra ideas, then discuss an actual implementation of the QR algorithm as well as some results from experiments with the algorithm.
 
 
-\section{MATHEMATICAL DERIVATIONS AND ALGORITHM COMPONENTS }
-\subsection{Data pipeline}
-We have been using randomly generated data as well as simulation data from Luchtenburg et al\cite{RefC} to test the rank-1 update algorithms and compare with a standard POD approach. The reason we use randomly generated data is because it allows for one to recreate our algorithm runs by using a random number seed. Additionally, because the data are random, we do not need to worry about a lack of noise in our data affecting the performance of our algorithm. The reason for using simulation data is because it allows us to recreate our algorithm runs and makes these runs portable. Additionally, these simulation data and the POD implementation that Luchtenburg et al provide allow us to validate our results.
+\section{MATHEMATICAL DERIVATIONS}
+\subsection{Gram-Schmidt Algorithm}
+\subsubsection*{Background}
+The Gram-Schmidt algorithm is named after Erhard Schmidt and J.P. Gram. Gram published his paper on the algorithm in 1883, and Schmidt based his version of the procedure on Schmidt's original paper. This algorithm was also independently found by P.S. Laplace, appearing in a paper he published in 1820. We will proceed to describe the Gram-Schmidt process.
 
-To assure portability, particularly between Julia and MATLAB, we implemented a data parser that reads in data which we plan on extending to use with live-data read-ins. We read in our data all at once for now, but to perform a fully online algorithm, we will be adding functionality to this that allows for reading in data one data point at a time.
+\subsubsection*{The Algorithm}
+Let $\mathbf{X} = \mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n$ be a linearly independent system.
 
+Gram-Schmidt constructs an orthonormal basis $\mathbf{v}_1, \mathbf{v}_2, \ldots, \mathbf{v}_n$ such that $$\text{span}\{\mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n\}= \text{span}\{\mathbf{v}_1, \mathbf{v}_2, \ldots, \mathbf{v}_n\}.$$
 
-\subsection{Covariance matrix}
-Consider data given as snapshots $U=\{u_1, ..., u_N\}$ and note that $U\in \mathbb R^{N\times M}$, where $N$ is the size of the data point $u$.
-There are various ways to set up the covariance matrix and compute the associated modes. 
-For use in POD\cite{RefC}, we have defined the covariance matrix as 
-\begin{equation}
- C_{ij}= \int u_i u_j
- \end{equation} where $i, j = 1, M$. However, we can also define the covariance matrix as 
- \begin{equation}
- \widetilde{C}_{kl}= (u_k, u_l),\quad  k,l=1,\ N.
- \end{equation} The way we define the covariance matrix for POD is determined by the problem size, because we ultimately want to use the covariance matrix to obtain the POD modes $\psi$ as \begin{equation}
- C=\Psi^{\top}\Lambda\Psi=\sum_i\psi_{ji}\lambda_i\psi_{ik}. 
-\end{equation}
-The first $k$ modes are given as 
-\begin{equation}
-\phi_k=\frac{1}{\sqrt{\lambda_k}}U\psi_k. 
-\end{equation}
+For the first step of the process, initialize $$\mathbf{v}_1= \mathbf{x}_1, \mathbf{e}_1 = \frac{\mathbf{v}_1}{\|\mathbf{v}_1\|}.$$
 
-In the PCA approach we define the covariance matrix as $\widetilde{C}=U'U$ such that $\widetilde{C}\in \mathbb R^{N\times N}$. Note that if the data $U$ are of dimension $N\gg M$ it is impossible to compute the eigenvalues of the covariance matrix $C\in \mathbb R^{N\times N}$. Also note the property which states that the non-zero eigenvalues of the matrix $\widetilde{C}=U'U$ are the same as the eigenvalues of $C=UU'$. For now, we have focused on pursuing the covariance matrix for use in PCA, but we can use this property to translate our implementation for use in POD as well.
+The next step, set $$\mathbf{v}_2 = \mathbf{x}_2 - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_2), \mathbf{e}_2 = \frac{\mathbf{v}_2}{\|\mathbf{v}_2\|}.$$
 
-It is also advisable to subtract the mean of the data from each data point, as this leads to a better conditioned matrix. Consider the matrix $C_{N-1}=U_{N-1}U_{N-1}^{\top}$, where $U_{N-1}=\{u_1,\ldots, u_{N-1}\}$. Presume an additional sample $u_{N}$ is added and the covariance matrix becomes $C_{N}=U_{N}U_{N}^{\top}$. By adding an additional sample the mean becomes $\mu_{N}=1/N\sum_{k=1}^{N} u_k$.
-The covariance matrix $\overline{C}_{N}=(U_{N}-\mu_{N})(U_{N}-\mu_{N})^{\top}$ is the matrix with the mean extracted from each snapshot. Basic algebra operations lead to the following decomposition 
-\begin{equation}
-\overline{C}_{N}=U_{N}U_{N}^{\top}+\begin{pmatrix}
-\mu_{N} \\
-\frac{\mu_{N}}{N}
-\end{pmatrix}\begin{pmatrix}N & 1\\
-1 & 0 
-\end{pmatrix} \begin{pmatrix}
-\mu_{N} \\
-\frac{\mu_{N}}{N}
-\end{pmatrix}^{\top}.
-\end{equation}
-To bring the remainder in a further decomposable form we factorize the matrix 
-\begin{equation}
-\begin{pmatrix}N & 1\\
-1 & 0 
-\end{pmatrix}=\begin{pmatrix}a_1 & a_2\\
-1 & 1 
-\end{pmatrix}\begin{pmatrix}a_1 & 0\\
-0 & a_2 
-\end{pmatrix}\begin{pmatrix}a_1 & a_2\\
-1 & 1 
-\end{pmatrix}^{\top}
-\end{equation}
+Note, we define $\text{proj}_{\mathbf{x}}(\mathbf{v})$ as $$\text{proj}_{\mathbf{x}}(\mathbf{v}) = \frac{\mathbf{x} \cdot \mathbf{v}}{\|\mathbf{v}\|^{2}}\mathbf{v}$$
 
-where
-\begin{equation}
-a_1=\frac{N-\sqrt{N^2+4}}{2},
-\end{equation}
-\begin{equation}
-a_2=\frac{N+\sqrt{N^2+4}}{2}.
-\end{equation}
+The 3rd step, set $$\mathbf{v}_3 = \mathbf{x}_3 - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_3) - \text{proj}_{\mathbf{v}_2}(\mathbf{x}_3), \mathbf{e}_2 = \frac{\mathbf{v}_3}{\|\mathbf{v}_3\|}.$$
+
+We can continue this process $n$ times,  setting,
+
+$$\mathbf{v}_n = \mathbf{x}_n - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_n) - \text{proj}_{\mathbf{v}_2}(\mathbf{x}_n)- \ldots - \text{proj}_{\mathbf{v}_n-1}(\mathbf{x}_n), \mathbf{e}_n = \frac{\mathbf{v}_n}{\|\mathbf{v}_n\|}$$.
+
+We end with vectors $\mathbf{e}_1, \mathbf{e}_2, \ldots, \mathbf{e}_n$ which are the vectors of our orthonormal basis for $\mathbf{X}$. 
+
+We can reformulate the above and see that to find $\mathbf{v}_k$, we can do the following,
+$$\mathbf{v}_k = \mathbf{x}_k - \sum_{j=1}^{n-1}\text{proj}_{\mathbf{v}_j}(\mathbf{x}_k).$$
+
+\subsubsection*{Example}
+Let $$\mathbf{X} =  \begin{bmatrix}
+1 & 1 \\
+2 & -1 \\
+-2 & 4 
+\end{bmatrix}. $$
+
+We would set, $$\mathbf{v}_1 = \begin{bmatrix} 1 & 2 & -2 \end{bmatrix}^{\top}$$
+
+[FINISH EXAMPLE]
 
 
-The updated covariance matrix is 
-\begin{equation}
-\overline{C}_{N}=U_{N}U_{N}^{\top}+\begin{pmatrix}
-\mu_{N} \\
-\frac{\mu_{N}}{N}
-\end{pmatrix}\begin{pmatrix}a_1 & a_2\\
-1 & 1 
-\end{pmatrix}\begin{pmatrix}a_1 & 0\\
-0 & a_2 
-\end{pmatrix}\begin{pmatrix}a_1 & a_2\\
-1 & 1 
-\end{pmatrix}^{\top}\begin{pmatrix}
-\mu_{N} \\
-\frac{\mu_{N}}{N}
-\end{pmatrix}^{\top}\ ,
-\end{equation}
+\subsection{QR Decomposition}
+\subsubsection*{Background}
+To use the QR algorithm, we must first introduce the QR decomposition. This decomposition was developed by John Francis while making modifications to Rutishauser's algorithm for finding eigenvalues, which involved using the LR decomposition. The QR decomposition relies on knowing that a matrix can be reduced to a triangular matrix, thanks to Schur. 
 
-or
-\begin{equation}
-\overline{C}_{N}=U_{N}U_{N}^{\top}+\begin{pmatrix}a_1 \mu_N +\frac{\mu_N}{N}\\
-a_2 \mu_N +\frac{\mu_N}{N}
-\end{pmatrix}\begin{pmatrix}a_1 & 0\\
-0 & a_2 
-\end{pmatrix}\begin{pmatrix}a_1 \mu_N +\frac{\mu_N}N\\
-a_2 \mu_N +\frac{\mu_N}{N}
-\end{pmatrix}^{\top}\ ,
-\end{equation}
+\subsubsection*{QR Decomposition Statement}
+For any matrix $\mathbf{A}$ (of order n, say) there exists a unitary matrix $\mathbf{Q}$ such that $\mathbf{A} = \mathbf{QR}$ where $\mathbf{R}$ is an upper (right) triangular matrix which has real, non-negative, diagonal elements. Moreover, $\mathbf{Q}$ is unique if $\mathbf{A}$ is non-singular.
 
-\begin{equation}
-\overline{C}_{N}=U_{N}U_{N}^{\top}+a_1v v^{\top}+a_2w w^{\top}
-\end{equation}
-with $v=a_1 \mu_N +\frac{\mu_N}{N}$ and $w=a_2 \mu_N +\frac{\mu_N}{N}$ and further
-$v= \frac{N-\sqrt{N^2+4}}{2}\mu_N +\frac{\mu_N}{N}$
-$w=\frac{N+\sqrt{N^2+4}}{2} \mu_N +\frac{\mu_N}{N}$.
+\subsubsection*{Obtaining the QR Decomposition}
+\textbf{Via Gram-Schmidt}
 
-\subsection{Eigendecomposition}
-\subsubsection*{1. Eigenvalues}
-Using the covariance matrix shown in the formulation in the previous section, we can take advantage of the symmetric positive definiteness of the matrix to easily perform rank-1 updates of previously computed eigendecompositions.
-Consider we know $U_n U_n^{\top}$ has eigenvalues $D=\{d_i\}_{i=1,m}$ and we want to find the eigenvalues $\Lambda = \{\lambda_i\}_{i=1,m}$ of $ \overline{C}_{N}$. Recall 
-\begin{equation}
-\overline{C}_{N}=U_{N}U_{N}^{\top}+a_1v v^{\top}+a_2w w^{\top}.
-\end{equation} We can perform this two step rank-1 update on $U_n U_n^{\top}$ and use the following lemma to set up our eigendecomposition.\\
+One method of obtaining the QR decomposition is by using the Gram-Schmidt algorithm. 
 
-\textbf{Lemma 1} (Bunch-Nielsen-Sorensen\cite{RefBNS}) Consider a matrix $C$ with eigenvalues $d_i, i=1,\ldots, N$ such that $d_1 < d_2 < … < d_N$, and a rank-1 update $\mathbf v\mathbf v^{\top}$. Then the eigenvalues $\lambda_i$ of $C+\mathbf v\mathbf v^{\top}$ satisfy the interlacing property where $
-d_1<\lambda_1<d_2<..<d_{N-1}<\lambda_{N-1}<d_N<\lambda_N, 
-$ and are the roots of of the secular equation
-\begin{equation}\label{eq:sec}
-1+\sum_{j=1}^N \frac{v_j^2}{d_j-\lambda}=0
-\end{equation}
-and the eigenvector $q_k$ corresponding to an eigenvalue $\lambda_k$ is
-\begin{equation}
-q_k=\sqrt{\dfrac{\prod\limits_{j=1}^{k-1}(d_k-\lambda_j) \prod\limits_{j=k}^{n}(\lambda_j-d_k)   }{\prod\limits_{j=1}^{k-1}(d_k-d_j) \prod\limits_{j=k+1}^{n}(d_j-d_k)   }
-}.
-\end{equation}
+Let $\mathbf{X} = \mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n$ be a linearly independent system.
 
-	With this lemma, we can use the Gu-Eisenstat algorithm\cite{RefD} to solve for the roots of the secular equation defined. 
-	
-	We implemented Gu-Eisenstat in both MATLAB and Julia. The Gu-Eisenstat algorithm relies on searching within the interval defined by the interlacing property where $d_n < \lambda_n < d_{n+1}$ to search for the eigenvalue $\lambda_n$. In our performance analysis of this algorithm, we had to evaluate how many iterations the algorithm had to perform when solving for an eigenvalue which we found to be within the neighborhood of 4 iterations as shown in Figure 1.
+For the first step of the process, initialize $$\mathbf{v}_1= \mathbf{x}_1, \mathbf{e}_1 = \frac{\mathbf{v}_1}{\|\mathbf{v}_1\|}.$$
 
-\begin{figure}
-\begin{center}
-\includegraphics[scale=.7]{graphics/iters.eps}
-\caption{A plot of iterations that the Gu-Eisenstat algorithm performs on average for finding the eigenvalue as problem size $N$ grows.}
-\end{center}
-\end{figure}
-	
-	Additionally, we tested the algorithm with various problem sizes and determined the complexity to be $O(\log(N))$ by performing a complexity analysis of run time and floating point operations. We ran our algorithm using randomly generated data of growing problem size $N$ and plotted the run time and flops as shown in Figure 2.
+The next step, set $$\mathbf{v}_2 = \mathbf{x}_2 - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_2), \mathbf{e}_2 = \frac{\mathbf{v}_2}{\|\mathbf{v}_2\|}.$$
 
-\begin{figure}
-\begin{center}
-\includegraphics[scale=.7]{graphics/flops2500.eps}
-\caption{A plot of the run time and floating point operation (flop) count of the Gu-Eisenstat algorithm for growing problem size $N$.}
-\end{center}
-\end{figure}	
+The 3rd step, set $$\mathbf{v}_3 = \mathbf{x}_3 - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_3) - \text{proj}_{\mathbf{v}_2}(\mathbf{x}_3), \mathbf{e}_2 = \frac{\mathbf{v}_3}{\|\mathbf{v}_3\|}.$$
 
-\subsubsection*{2. Eigenvectors}
-Computing the eigenvectors relies on knowing the eigenvalues. So, after we have read in our data and computed the final set of updated eigenvalues, we proceed to solve for eigenvectors. Consider we have $L = D - \Lambda$ where $D$ are the eigenvalues from the second to last Gu-Eisenstat run and $\Lambda$ is the final set of eigenvalues computed by Gu-Eisenstat. %To update the eigenvectors, we need to scale the new data point by a set of initially computed eigenvectors, let this update be $a = \frac{Q’}{l}$, where $Q'$ is the initial set of eigenvectors. 
-%We can determine the updated eigenvectors by doing the following $Q = L v$ 
-% further normalized via $$Q = \frac{Q^{\top}Q}{|Q|}.$$
- The updated eigenvectors are given by the system 
- \begin{equation}
- Q= \frac{S L^{-1} v}{\vert S L^{-1} v\vert} \ ,
- \end{equation}
-where $S$ is the set of eigenvectors of the matrix $C_N$ and $v$ is the rank-1 update applied to the matrix $C_N$.
- 
-\subsubsection*{3. Adjustments to approach}
-We faced floating point error with our eigenvalue solver. We would see this issue arise when using simulation data that had no noise.  As we received each update, the difference in eigenvalues from one update to the next would be so small, that over enough iterations, error would build up.  As of now, we have manually added noise to our simulation data.
+We can continue this process $n$ times,  setting,
 
-	We also faced floating point error that occurred when we computed eigenvectors iteratively for each data point we received. This is because the difference between the eigenvectors before the update and after was so small, floating-point error would build up after various iterations. Therefore, we compute our eigenvectors after iteratively finding all eigenvalues using Gu-Eisenstat.
+$$\mathbf{v}_n = \mathbf{x}_n - \text{proj}_{\mathbf{v}_1}(\mathbf{x}_n) - \text{proj}_{\mathbf{v}_2}(\mathbf{x}_n)- \ldots - \text{proj}_{\mathbf{v}_n-1}(\mathbf{x}_n), \mathbf{e}_n = \frac{\mathbf{v}_n}{\|\mathbf{v}_n\|}$$.
+
+To obtain the QR decomposition, we define the matrices $\mathbf{Q}, \mathbf{R}$ as,
+$$\mathbf{Q} = [\mathbf{e}_1 | \mathbf{e}_2 | \ldots | \mathbf{e}_n], \mathbf{R} = \begin{bmatrix}
+  \mathbf{e}_1 \cdot \mathbf{x}_1 &
+  \mathbf{e}_1 \cdot \mathbf{x}_2 &
+  \mathbf{e}_1 \cdot \mathbf{x}_3 & \cdots \\
+                                         0 &
+ \mathbf{e}_2 \cdot \mathbf{x}_2 &
+ \mathbf{e}_2 \cdot \mathbf{x}_3& \cdots \\
+                                         0 &
+                                         0 &
+  \mathbf{e}_3 \cdot \mathbf{x}_3& \cdots \\
+                                    \vdots &
+                                    \vdots &
+                                    \vdots &
+                                    \ddots\end{bmatrix}.$$
+\\
+\textbf{Other methods}
+\\
+Other methods that can be used to obtain the QR decomposition include using Householder reflections., which involve taking a vector and rotating it about a plane or hyperplane. A benefit of using Householder reflections over the Gram-Schmidt process is, Gram-Schmidt experiences numerical instability. This is because round-off error can occur as vectors are projected onto each orthonormal basis vector. 
+
+One can also use Givens rotations. This involves rotating the matrix and zero-ing each element below the diagonal of the matrix, which forms the $\mathbf{R}$ matrix. Concatenating all of the Givens rotations forms the $\mathbf{Q}$ matrix.
 
 
-\section{DISCUSSION AND FUTURE WORK}
-\label{disc}
-As of now we have implemented rank-1 components that can be applied toward the building of a rank-1 dimensional reduction algorithm, such as a rank-1 PCA or rank-1 POD algorithm, however there are various ways we aim to refine and improve these components. 
+\subsection{QR Algorithm}
+\subsubsection*{The Algorithm}
+Now that we have established the QR decomposition, we can proceed to how the QR decomposition can be used in the QR algorithm. 
 
-Our data pipeline as of now uses randomly generated data and simulation data. As we have found with simulation data, there is need to add noise to avoid floating point errors. We aim to further examine how we can make our eigendecomposition algorithm robust to this issue. We aim to extend our data parser to read in data at a controlled rate, rather than reading in our data all at once. Additionally, we aim to implement a selective update routine wherein we would examine how a data point affects the eigenvalue decay of the eigendecomposition at that reading and determine whether to include that data point in our dimensionality reduction. This would allow for further improvements in memory usage by reducing the number of computations performed with new data points.
+Let $\mathbf{X} = \mathbf{x}_1, \mathbf{x}_2, \ldots, \mathbf{x}_n$ be a linearly independent system.
 
-The rank-1 covariance algorithm as of now is mainly based on a PCA approach to dimensional reduction. We aim to expand this algorithm to be able to calculate the covariance matrix for use in POD based on the dimensionality of given data. For the eigendecomposition algorithm we would like to perform further testing on its performance on real-world data rather than just simulation data. Additionally, we would like to study how this algorithm could be reformulated to be parallelized onto GPUs to further improve its performance. Additionally, we would like to perform more extensive error checking of each component.
+Initialize $\mathbf{X}_1 = \mathbf{X}$ .
+$$\mathbf{X}_1 = \mathbf{Q}_1\mathbf{R}_1$$
+$$\mathbf{R}_1\mathbf{Q}_1 = \mathbf{X}_2 = \mathbf{Q}_2\mathbf{R}_2$$
+$$\mathbf{R}_2\mathbf{Q}_2 = \mathbf{X}_3 = \mathbf{Q}_3\mathbf{R}_3$$
+$$\vdots$$
+$$\mathbf{R}_{k-1}\mathbf{Q}_{k-1} = \mathbf{X}_k = \mathbf{Q}_k\mathbf{R}_k$$
 
-\section{ACKNOWLEDGEMENTS}
-\label{ack}
-This work was supported in part by the U.S. Department of Energy, Office of Science, Office of Workforce Development for Teachers and Scientists (WDTS) under the Science Undergraduate Laboratory Internships (SULI) program. 
+As we repeat this process, if $\mathbf{A}$ is non-singular (has a determinant of 0) then the elements below the diagonal of $\mathbf{X}_k$ tend to $0$, the elements above the diagonal tend to fixed values, and the elements on the principal diagonal then to the eigenvalues of $\mathbf{A}$.
 
-Thank you to Oana Marin, for her unfaltering support and dedication to my experience this summer and beyond.  I also want to thank Jacob Freund, a fellow SULI student who collaborated with me on this project and Yuzhen Liu, for sharing her expertise and enthusiasm throughout the summer.
+\subsubsection*{Example}
+Recall the matrix,
+$$\mathbf{X} =  \begin{bmatrix}
+1 & 1 \\
+2 & -1 \\
+-2 & 4 
+\end{bmatrix}. $$
+
+[FINISH EXAMPLE, WHICH'LL BE FROM GRAM-SCHMIDT SECTION]
+
+\section{IMPLEMENTATION}
+
+\subsection{Background}
+The implementation was done in the Julia programming language. We will proceed to show the code and discuss important implementation decisions made in the implementation of the QR algorithm and its precursory components.
+
+\subsection{Gram-Schmidt and QR Decomposition}
+\begin{lstlisting}
+"""
+Compute an orthonormal basis for a full-rank, real, 
+square matrix of any size
+Inputs:
+    x - matrix to find orthonormal basis and QR decomposition of
+Outputs:
+    q - Q matrix in QR decomposition
+    r - R matrix in QR decomposition
+"""
+function qr_gs_(x)
+    #check if matrix meets pre-requisites
+    if fullrank_square(x) == false
+        throw("Matrix is not square or it is not full-rank!")
+        return
+    end
+
+    #get size of matrix
+    rows, cols = size(x)
+
+    #initialize orthogonal matrix and upper triangular matrix
+    q = zeros(rows, cols)
+    r = zeros(rows, cols)
+
+    #define v1 & e1, this is the first step 
+    # before we can begin iterating
+    v1 = x[:, 1]
+    e1 = v1 ./ norm(v1)
+
+    #set the first columns of q and r
+    q[:, 1] = e1
+    #variable to hold last sum a_i, we begin with a_1
+    a_i = dot(e1, x[:, 1]) 
+    r[1, 1] = a_i
+
+    #continue to iterate through gram-schmidt 
+    # through all columns, fill q & r
+    for i = 2:cols
+        #get the ith column from the x matrix and e_i
+        x_i = x[:, i]
+        #initialize weighted sum of projections
+        projection_sum = zeros(rows)
+
+        #calculate the v_i-th column of the orthonormal basis
+        for j = 1:i-1
+            curr_q = q[:, j]
+            projection_sum += (dot(curr_q, x_i)/norm(curr_q)) .* curr_q
+        end
+        #subtract projections and normalize
+        e_i = (x_i - projection_sum)
+        e_i ./= norm(e_i)
+
+        q[:, i] = e_i
+
+        #fill in the r matrix with r_entry
+        for k = 1:rows
+            r[k, i] = dot(x_i, q[:, k])
+        end
+    end
+
+    #return the orthonormal basis, q, and r
+    return q, r
+end
+\end{lstlisting}
+You will note that we only work with square, real, matrices. The rationale for this decisions is we know that the QR decomposition exists for any real square matrices and we can depend on the Gram-Schmidt algorithm to give us the decomposition of square matrices. Additionally, we accept only real matrices because the QR algorithm requires adjustment to converge to complex eigenvalues.John Francis introduces this adjustment as a complex shift in his second paper on the QR algorithm.
+
+\subsubsection*{QR Algorithm}
+\begin{lstlisting}
+"""
+Run the QR algorithm on a full-rank, real, square matrix x and iterate until
+ eigenvalues within tolerance level are found or iteration limit has been reached
+Inputs:
+    x - matrix to find eigenvalues of using QR
+    tol - tolerance level
+    max_iters - iteration limit
+Outputs:
+    q - the Q matrix of x's QR decomposition
+    r - the R matrix of x's QR decomposition
+    true_lambdas - the true eigenvalues of x according to Julia
+    qr_lambdas - the eigenvalues determined by QR algorithm
+    iters - the number of iterations x ran through the QR algorithm
+    errors - error between qr_lambdas and true_lambdas at each iteration
+"""
+function qr_eigenvals_(x, tol::Float64=default_tol, max_iters::Int64=default_maxit)
+    #check if matrix meets pre-requisites
+    if fullrank_square(x) == false
+        throw("Matrix is not square or it is not full-rank!")
+        return
+    end
+
+    #get size of matrix
+    rows, cols = size(x)
+    
+    #use Julia's eigenvalue solver to get what we will consider the "true"
+    # eigenvalues of x
+    true_lambdas = eigvals(x)
+
+    #initialize vector to hold lambda estimates
+    qr_lambdas = zeros(cols)
+
+    #initialize matrices q and r
+    q = zeros(rows, cols)
+    r = zeros(rows, cols)
+
+    #current error, initialize iteration counter, initialize vector to hold errors
+    errors = zeros(0)
+    err = 1
+    iters = 0
+
+    #initialize matrix to find q r decomposition of to be original matrix x
+    curr_A = x
+
+    #find QR decomposition of x and iterate until max_iters have occured
+    # or tolerance level has been satisfied
+    while (err > tol) && (iters < max_iters)
+        q, r = qr_gs_(curr_A)
+        curr_a = r * q
+
+        #get values along diagonal of curr_A
+        qr_lambdas = diag(curr_A)
+        #calculate error, using L2 norm
+        err = norm(true_lambdas) - norm(qr_lambdas)
+        #increment iteration counter & update error list
+        iters += 1
+        append!(errors, err)
+    end
+
+    #return the final qr decomposition, "true" eigenvalues, 
+    # estimated eigenvalues and iteration count
+    return q, r, true_lambdas, qr_lambdas, iters, errors
+end
+\end{lstlisting}
+
+[INSERT DISCUSSION OF IMPLEMENTATION DECISIONS HERE]
+
+\subsubsection*{Experiments}
+\textbf{Identity Matrix}
+
+[INSERT CODE, VISUALIZATIONS, DISCUSSION HERE]
+
+\textbf{Nice Diagonal Matrices and Noise}
+
+[INSERT CODE, VISUALIZATIONS, DISCUSSION HERE]
+
+\textbf{Matrices with complex eigenvalues}
+
+[INSERT CODE, VISUALIZATIONS, DISCUSSION HERE]
 
 \bibliography{references} % Delete if no references
 % See woc_2col.text for how to cite sources
@@ -240,24 +349,6 @@ Thank you to Oana Marin, for her unfaltering support and dedication to my experi
 \bibitem{RefA}
 van der Maaten, Laurens, Postma, Eric, and Herik, H., Dimensionality Reduction: A Comparative Review, Journal of Machine Learning Research, \textbf{10}
 
-\bibitem{RefIntro}
-Loong Chuen Lee, Abdul Aziz Jemain,
-On overview of PCA application strategy in processing high dimensionality forensic data,
-Microchemical Journal,
-\textbf{169},
-2021
-
-\bibitem{RefB}
-R. Mitz and Y. Shkolnisky, ROIPCA: An Online PCA algorithm based on rank-one updates, CoRR, (2019)
-
-\bibitem{RefC}
-D.M. Luchtenburg, B.R. Noack, and M. Schlegel, An introduction to the POD Galerkin method for fluid flows with analytical examples and MATLAB source codes, Berlin Institute of Technology MB1, Muller-Breslau-Strabe, \textbf{11}
-
-\bibitem{RefBNS}
-Bunch, J.R., Nielsen, C.P. , and Sorensen, D.C. Rank-one modification of the symmetric eigenproblem. Numer. Math. 31, 31–48 (1978)
-
-\bibitem{RefD}
-Gu, Ming and Eisenstat, Stanley C., A Stable and Efficient Algorithm for the Rank-One Modification of the Symmetric Eigenproblem,  SIAM Journal on Matrix Analysis and Applications, \textbf{15} (4), 1266-1276 (1994)
 
  \end{thebibliography}
 

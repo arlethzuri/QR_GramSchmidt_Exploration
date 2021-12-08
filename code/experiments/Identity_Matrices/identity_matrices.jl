@@ -61,4 +61,4 @@ plot(iterations,
     title = "QR Iterations for Growing Identity Matrix Size",
     fontfamily = "Times",
     dpi=1000)
-savefig("iterations")
+savefig("plots/iterations")
